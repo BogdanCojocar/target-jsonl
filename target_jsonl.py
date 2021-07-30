@@ -10,6 +10,7 @@ from datetime import datetime
 import singer
 from jsonschema import Draft4Validator, FormatChecker
 from decimal import Decimal
+import boto3
 
 logger = singer.get_logger()
 
@@ -34,7 +35,7 @@ def float_to_decimal(value):
     return value
 
 
-def persist_messages(messages, destination_path, do_timestamp_file=True):
+def persist_messages(messages, destination_path, s3_bucket, do_timestamp_file=True):
     state = None
     schemas = {}
     key_properties = {}
@@ -42,6 +43,8 @@ def persist_messages(messages, destination_path, do_timestamp_file=True):
 
     timestamp_file_part = '-' + datetime.now().strftime('%Y%m%dT%H%M%S') if do_timestamp_file else ''
 
+    s3_messages = []
+    s3_key = ''
     for message in messages:
         try:
             o = singer.parse_message(message).asdict()
@@ -63,6 +66,8 @@ def persist_messages(messages, destination_path, do_timestamp_file=True):
 
             with open(filename, 'a', encoding='utf-8') as json_file:
                 json_file.write(json.dumps(o['record']) + '\n')
+            s3_messages.append(json.dumps(o['record']) + '\n')
+            s3_key = filename
 
             state = None
         elif message_type == 'STATE':
@@ -75,6 +80,13 @@ def persist_messages(messages, destination_path, do_timestamp_file=True):
             key_properties[stream] = o['key_properties']
         else:
             logger.warning("Unknown message type {} in message {}".format(o['type'], o))
+
+    s3 = boto3.client('s3')
+    s3.put_object(
+        Body=str(s3_messages)[1:-1],
+        Bucket=s3_bucket,
+        Key=s3_key
+    )
 
     return state
 
@@ -91,7 +103,7 @@ def main():
         config = {}
 
     input_messages = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
-    state = persist_messages(input_messages, config.get('destination_path', ''), config.get('do_timestamp_file', True))
+    state = persist_messages(input_messages, config.get('destination_path', ''), config.get('s3_bucket'), config.get('do_timestamp_file', True))
 
     emit_state(state)
     logger.debug("Exiting normally")
